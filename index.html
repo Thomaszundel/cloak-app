@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#090d16">
+  <title>CloakPost</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      touch-action: manipulation;
+    }
+    body {
+      margin: 0;
+      padding: 16px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #090d16;
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #94a3b8;
+    }
+    .wrapper {
+      width: 100%;
+      max-width: 800px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: #111827;
+      padding: 14px;
+      border-radius: 8px;
+      border: 1px solid #1e293b;
+    }
+    textarea {
+      width: 100%;
+      height: 70px;
+      background: #090d16;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 10px;
+      color: #f8fafc;
+      font-size: 15px;
+      resize: none;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #38bdf8;
+    }
+    .btn-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    button {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #status {
+      font-size: 13px;
+      color: #38bdf8;
+      font-weight: 500;
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 800 / 480;
+      background: #111827;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+    }
+    .video-preview {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      background: #111827;
+      padding: 14px;
+      border-radius: 8px;
+      border: 1px solid #1e293b;
+    }
+    video {
+      width: 100%;
+      border-radius: 6px;
+    }
+    .download-btn {
+      align-self: flex-start;
+      background: #10b981;
+      color: #ffffff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      display: inline-block;
+    }
+  </style>
+</head>
+<body>
+
+<div class="wrapper">
+  <div class="controls">
+    <textarea id="messageInput" placeholder="Enter message (10-20 words work best)...">Meeting at midnight behind the old warehouse bring keys</textarea>
+    <div class="btn-row">
+      <button id="renderBtn">Export Video</button>
+      <span id="status">Ready</span>
+    </div>
+  </div>
+
+  <canvas id="stage" width="800" height="480"></canvas>
+
+  <div class="video-preview" id="videoContainer">
+    <video id="outputVideo" controls loop playsinline autoplay muted></video>
+    <a id="downloadLink" class="download-btn">Save to Device</a>
+  </div>
+</div>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
+
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const renderBtn = document.getElementById('renderBtn');
+  const statusLabel = document.getElementById('status');
+  const messageInput = document.getElementById('messageInput');
+  const videoContainer = document.getElementById('videoContainer');
+  const outputVideo = document.getElementById('outputVideo');
+  const downloadLink = document.getElementById('downloadLink');
+
+  const COLS = 8, ROWS = 5;
+  const CELL_WIDTH = canvas.width / COLS;
+  const CELL_HEIGHT = canvas.height / ROWS;
+
+  let currentAnimId = null;
+  let currentVideoUrl = null;
+
+  const distractors = [
+    "whisper", "ancient", "forest", "shadow", "beyond", "silver", "mountain",
+    "silent", "river", "path", "hidden", "journey", "harbor", "watch",
+    "valley", "starlight", "lantern", "drifting", "narrow", "echo",
+    "frost", "breeze", "beacon", "hollow", "meadow", "twilight",
+    "amber", "horizon", "timber", "wander", "glimmer", "quiet",
+    "orbit", "passage", "compass", "signal", "summit", "canyon"
+  ];
+
+  function generatePath(length) {
+    const maxSteps = Math.min(length, COLS * ROWS);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const visited = new Set();
+      const coords = [];
+      let c = Math.floor(Math.random() * COLS);
+      let r = Math.floor(Math.random() * ROWS);
+
+      coords.push([c, r]);
+      visited.add(`${c},${r}`);
+
+      while (coords.length < maxSteps) {
+        const neighbors = [
+          [c + 1, r], [c - 1, r], [c, r + 1], [c, r - 1],
+          [c + 1, r + 1], [c - 1, r - 1], [c + 1, r - 1], [c - 1, r + 1]
+        ].filter(([nc, nr]) =>
+          nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS && !visited.has(`${nc},${nr}`)
+        );
+
+        if (neighbors.length === 0) break;
+        const [nextC, nextR] = neighbors[Math.floor(Math.random() * neighbors.length)];
+        c = nextC; r = nextR;
+        coords.push([c, r]);
+        visited.add(`${c},${r}`);
+      }
+
+      if (coords.length === maxSteps) return coords;
+    }
+
+    const fallback = [];
+    for (let i = 0; i < maxSteps; i++) {
+      const r = Math.floor(i / COLS);
+      const c = (r % 2 === 0) ? (i % COLS) : (COLS - 1 - (i % COLS));
+      fallback.push([c, r]);
+    }
+    return fallback;
+  }
+
+  function getBestSupportedMime() {
+    const types = [
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4;codecs=avc1',
+      'video/mp4'
+    ];
+    for (const t of types) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) {
+        return t;
+      }
+    }
+    return '';
+  }
+
+  async function generateAndRecord() {
+    const words = messageInput.value.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      statusLabel.textContent = "Please enter some text.";
+      return;
+    }
+
+    // Cancel active drawing loops and clear memory
+    if (currentAnimId) cancelAnimationFrame(currentAnimId);
+    if (currentVideoUrl) URL.revokeObjectURL(currentVideoUrl);
+
+    renderBtn.disabled = true;
+    statusLabel.textContent = "Recording...";
+    videoContainer.style.display = "none";
+
+    const path = generatePath(words.length);
+    const pathLookup = new Map();
+    path.forEach(([c, r], i) => pathLookup.set(`${c},${r}`, words[i]));
+
+    const nodeCoords = path.map(([c, r]) => ({
+      x: c * CELL_WIDTH + CELL_WIDTH / 2 + Math.sin(r * 1.5) * 8,
+      y: r * CELL_HEIGHT + CELL_HEIGHT / 2 + Math.cos(c * 1.5) * 8
+    }));
+
+    const stream = canvas.captureStream(30);
+    const mime = getBestSupportedMime();
+    let recorder;
+
+    try {
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 2500000 } : undefined);
+    } catch (err) {
+      statusLabel.textContent = "Encoder error: " + err.message;
+      renderBtn.disabled = false;
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+
+    const chunks = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onerror = (e) => {
+      statusLabel.textContent = "Error: " + (e.error ? e.error.name : "unknown");
+      renderBtn.disabled = false;
+      stream.getTracks().forEach(t => t.stop());
+    };
+
+    recorder.onstop = () => {
+      // Release hardware video pipe
+      stream.getTracks().forEach(t => t.stop());
+
+      const isMp4 = (recorder.mimeType || mime).includes('mp4');
+      const blob = new Blob(chunks, { type: recorder.mimeType || (isMp4 ? 'video/mp4' : 'video/webm') });
+      currentVideoUrl = URL.createObjectURL(blob);
+      outputVideo.src = currentVideoUrl;
+      downloadLink.href = currentVideoUrl;
+      downloadLink.download = isMp4 ? 'cloaked_post.mp4' : 'cloaked_post.webm';
+      videoContainer.style.display = "flex";
+      renderBtn.disabled = false;
+      statusLabel.textContent = "Finished!";
+    };
+
+    // 250ms chunks prevent Android MediaCodec buffer stalls
+    recorder.start(250);
+
+    const durationPerWord = 450;
+    const totalTravelTime = path.length * durationPerWord;
+    const totalDuration = totalTravelTime + 1200;
+    const startTime = performance.now();
+
+    function drawFrame(now) {
+      const elapsed = now - startTime;
+      
+      ctx.fillStyle = "#111827";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.03)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < canvas.width; i += 16) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i + Math.sin(i + elapsed * 0.003) * 8, canvas.height);
+        ctx.stroke();
+      }
+
+      let headX = -1000, headY = -1000;
+      let activeIndex = 0;
+
+      if (elapsed < totalTravelTime) {
+        const progress = elapsed / durationPerWord;
+        activeIndex = Math.min(Math.floor(progress), path.length - 1);
+        const nextIndex = Math.min(activeIndex + 1, path.length - 1);
+        const subProgress = progress - activeIndex;
+
+        headX = nodeCoords[activeIndex].x + (nodeCoords[nextIndex].x - nodeCoords[activeIndex].x) * subProgress;
+        headY = nodeCoords[activeIndex].y + (nodeCoords[nextIndex].y - nodeCoords[activeIndex].y) * subProgress;
+      } else {
+        activeIndex = path.length - 1;
+        headX = nodeCoords[activeIndex].x;
+        headY = nodeCoords[activeIndex].y;
+      }
+
+      const gradient = ctx.createRadialGradient(headX, headY, 10, headX, headY, 150);
+      gradient.addColorStop(0, "rgba(56, 189, 248, 0.7)");
+      gradient.addColorStop(1, "rgba(56, 189, 248, 0.0)");
+
+      ctx.beginPath();
+      for (let i = 0; i <= activeIndex; i++) {
+        if (i === 0) ctx.moveTo(nodeCoords[i].x, nodeCoords[i].y);
+        else ctx.lineTo(nodeCoords[i].x, nodeCoords[i].y);
+      }
+      ctx.lineTo(headX, headY);
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 16;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+
+      ctx.font = "16px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const warpX = c * CELL_WIDTH + CELL_WIDTH / 2 + Math.sin(r * 1.5) * 8;
+          const warpY = r * CELL_HEIGHT + CELL_HEIGHT / 2 + Math.cos(c * 1.5) * 8;
+          const key = `${c},${r}`;
+          const isPath = pathLookup.has(key);
+          const word = isPath ? pathLookup.get(key) : distractors[(r * COLS + c) % distractors.length];
+
+          const dist = Math.hypot(warpX - headX, warpY - headY);
+          const alpha = dist < 130 ? 0.45 + (1 - dist / 130) * 0.55 : 0.45;
+
+          ctx.fillStyle = `rgba(226, 232, 240, ${alpha})`;
+          ctx.save();
+          ctx.translate(warpX, warpY);
+          ctx.rotate(Math.sin(c * 13 + r * 7) * 0.07);
+          ctx.fillText(word, 0, 0);
+          ctx.restore();
+        }
+      }
+
+      if (elapsed < totalDuration) {
+        currentAnimId = requestAnimationFrame(drawFrame);
+      } else {
+        if (recorder.state !== 'inactive') {
+          recorder.stop();
+        }
+      }
+    }
+
+    currentAnimId = requestAnimationFrame(drawFrame);
+  }
+
+  renderBtn.addEventListener('click', generateAndRecord);
+</script>
+</body>
+</html>
